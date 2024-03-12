@@ -1,7 +1,5 @@
--- Doorbells
--- A compositional tool that enables the scheduling and layering of short, minimalist musical patterns
--- Inspired by utilitarian music from doorbells, telephones, washing machines, and elevators
--- Indebted to the Norns scripts Plonky and dreamsequence
+-- TBD
+-- Quad polyphonic tracker
 
 -- -- Core libraries
 local nb = require "nb/lib/nb"
@@ -9,10 +7,9 @@ local musicutil = require "musicutil"
 local lattice = require "lattice"
 local clock = require "clock"
 
-local scale_names = {}
-
+local scale_names = {} -- A bit of a hack to get the scale names into a usable format for setting params
 for i = 1, #musicutil.SCALES do
-    table.insert(scale_names, musicutil.SCALES[i].name) -- A bit of a hack to get the scale names into a usable format for setting params
+    table.insert(scale_names, musicutil.SCALES[i].name) 
 end
 
 local g = grid.connect()
@@ -22,7 +19,7 @@ local dim_light = 2
 local medium_light = 5
 local high_light = 10
 
-local active_tracker_index = 1
+local active_tracker_index = 1 -- Used to manage state on norns screen and grid
 
 local trackers = {
     {
@@ -171,6 +168,81 @@ function init()
 
 end
 
+-- Constants to separate the control panel
+local CONTROL_COLUMNS_START = 13
+local CONTROL_COLUMNS_END = 16
+local TRACKER_SELECTION_ROW = 8
+local LENGTH_SELECTION_START_ROW = 5
+local LENGTH_SELECTION_END_ROW = 7
+
+-- Function to change the active tracker
+function changeActiveTracker(trackerIndex)
+    active_tracker_index = trackerIndex
+    grid_redraw()
+    redraw()
+end
+
+-- Function to update the length of the active tracker (i.e the number of steps that will play of the possible 12)
+function updateTrackerLength(x, y)
+    local lengthOffset = (y - LENGTH_SELECTION_START_ROW) * 4 + (x - CONTROL_COLUMNS_START + 1)
+    trackers[active_tracker_index].length = lengthOffset
+    grid_redraw()
+end
+
+-- Logic for handling key pressed on the control panel
+function handleControlColumnPress(x, y, pressed)
+    if not pressed then return end -- Ignore key releases
+
+    if y == TRACKER_SELECTION_ROW then
+        changeActiveTracker(x - CONTROL_COLUMNS_START + 1)
+    elseif y >= LENGTH_SELECTION_START_ROW and y <= LENGTH_SELECTION_END_ROW then
+        updateTrackerLength(x, y)
+    end
+    -- LATER: Maybe velocity, swing, and division are set here. Maybe that's just handled on the norns screen. Dunno.
+end
+
+function g.key(x, y, pressed)
+    if x >= CONTROL_COLUMNS_START and x <= CONTROL_COLUMNS_END then -- Catch key presses in the control panel and handle them with distinct logic
+        handleControlColumnPress(x, y, pressed)
+    else -- Otherwise treat them as edits to the tracker (LATER: Break this logic out as well)
+        local degree = 9 - y -- Invert the y-coordinate to match the horizontal layout
+        local working_tracker = trackers[active_tracker_index]
+
+        if pressed == 1 and x <= 12 then -- When a degree is pressed and the associated step is less than the max sequence length
+            local index = nil
+            for i, v in ipairs(working_tracker.steps[x].degrees) do
+                if v == degree then
+                    index = i
+                    break
+                end
+            end
+            if index then -- If it is, remove it
+                table.remove(working_tracker.steps[x].degrees, index)
+                print("Degree " .. degree .. " removed from step " .. x)
+            else -- If it is not, add it
+                table.insert(working_tracker.steps[x].degrees, degree)
+                print("Degree " .. degree .. " added to step " .. x)
+            end
+            grid_redraw()
+        end
+    end
+end
+
+function enc(n, d)
+    if n == 1 then
+        active_tracker_index =  util.clamp(active_tracker_index + d, 1, #trackers)
+        grid_redraw()
+        redraw()
+    end
+end
+
+function redraw()
+    screen.clear()
+    screen.move(64, 32)
+    screen.text_center(active_tracker_index)
+    screen.update()
+end
+
 function grid_redraw()
     if not g then
         print("no grid found")
@@ -181,6 +253,7 @@ function grid_redraw()
 
     g:all(0) -- Zero out grid
 
+    -- Draw Tracker
     for step = 1, 12 do -- Iterate through each step
         for degree = 1, 8 do -- Iterate through each degree in the step
             local grid_y = 9 - degree -- Invert the y-coordinate
@@ -212,46 +285,27 @@ function grid_redraw()
         end
     end
 
-    g:refresh() -- Send the LED buffer to the grid
-end
-
-function g.key(step, y, pressed)
-    local degree = 9 - y -- Invert the y-coordinate to match the new layout
-    local working_tracker = trackers[active_tracker_index]
-
-    if pressed == 1 and step <= 12 then -- When a degree is pressed and the associated step is less than the max sequence length
-
-        -- check to see if it is already in the note_table for that step
-        local index = nil
-        for i, v in ipairs(working_tracker.steps[step].degrees) do
-            if v == degree then
-                index = i
-                break
+    -- Highlight the length of the active tracker
+    for y = LENGTH_SELECTION_START_ROW, LENGTH_SELECTION_END_ROW do
+        for x = CONTROL_COLUMNS_START, CONTROL_COLUMNS_END do
+            local lengthValue = (y - LENGTH_SELECTION_START_ROW) * 4 + (x - CONTROL_COLUMNS_START + 1)
+            if lengthValue <= trackers[active_tracker_index].length then
+                g:led(x, y, 3)
+            else
+                g:led(x, y, 1)
             end
         end
-        if index then -- If it is, remove it
-            table.remove(working_tracker.steps[step].degrees, index)
-            print("Degree " .. degree .. " removed from step " .. step)
-        else -- If it is not, add it
-            table.insert(working_tracker.steps[step].degrees, degree)
-            print("Degree " .. degree .. " added to step " .. step)
+    end
+
+    -- Highlight the active tracker in the control panel
+    for x = CONTROL_COLUMNS_START, CONTROL_COLUMNS_END do
+        local trackerIndex = x - CONTROL_COLUMNS_START + 1
+        if trackerIndex == active_tracker_index then
+            g:led(x, TRACKER_SELECTION_ROW, medium_light) -- Light the active tracker at medium_light intensity
+        else
+            g:led(x, TRACKER_SELECTION_ROW, 0) -- Other trackers remain at inactive_light intensity
         end
-        grid_dirty = true
-        grid_redraw()
     end
-end
 
-function enc(n, d)
-    if n == 1 then
-        active_tracker_index =  util.clamp(active_tracker_index + d, 1, #trackers)
-        grid_redraw()
-        redraw()
-    end
-end
-
-function redraw()
-    screen.clear()
-    screen.move(64, 32)
-    screen.text_center(active_tracker_index)
-    screen.update()
+    g:refresh() -- Send the LED buffer to the grid
 end
